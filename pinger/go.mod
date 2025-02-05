@@ -2,7 +2,10 @@ module pinger
 
 go 1.21
 
-require github.com/docker/docker v24.0.7+incompatible
+require (
+	github.com/docker/docker v24.0.7+incompatible
+	github.com/sirupsen/logrus v1.9.3
+)
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect

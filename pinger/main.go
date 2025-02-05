@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,7 +15,10 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
+	"github.com/sirupsen/logrus"
 )
+
+var log = logrus.New()
 
 // Config содержит конфигурацию приложения
 type Config struct {
@@ -45,7 +47,6 @@ type Pinger struct {
 	config     Config
 	dockerCli  *client.Client
 	httpClient *http.Client
-	logger     *log.Logger
 }
 
 // NewPinger создаёт новый экземпляр Pinger
@@ -53,7 +54,6 @@ func NewPinger(config Config) (*Pinger, error) {
 	var cli *client.Client
 	var err error
 
-	// Если DockerEndpoint указан, используем его
 	if config.DockerEndpoint != "" {
 		cli, err = client.NewClientWithOpts(
 			client.WithHost(config.DockerEndpoint),
@@ -72,11 +72,10 @@ func NewPinger(config Config) (*Pinger, error) {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		logger: log.New(os.Stdout, "[PINGER] ", log.LstdFlags),
 	}, nil
 }
 
-// getContainers получает список всех контейнеров
+// getContainers получает список всех контейнерров
 func (p *Pinger) getContainers(ctx context.Context) ([]types.Container, error) {
 	containers, err := p.dockerCli.ContainerList(ctx, types.ContainerListOptions{
 		All: true,
@@ -89,7 +88,6 @@ func (p *Pinger) getContainers(ctx context.Context) ([]types.Container, error) {
 
 // getContainerIP получает IP-адрес контейнера через ContainerInspect, если он отсутствует в ContainerList
 func (p *Pinger) getContainerIP(ctx context.Context, container types.Container) (string, error) {
-	// Попытка взять IP из ContainerList может не дать полной информации
 	inspect, err := p.dockerCli.ContainerInspect(ctx, container.ID)
 	if err != nil {
 		return "", fmt.Errorf("failed to inspect container: %v", err)
@@ -115,7 +113,6 @@ func (p *Pinger) pingContainer(ctx context.Context, container types.Container) *
 		Timestamp: time.Now(),
 	}
 
-	// Получаем IP адрес контейнера
 	ip, err := p.getContainerIP(ctx, container)
 	if err != nil {
 		result.Error = err.Error()
@@ -123,7 +120,6 @@ func (p *Pinger) pingContainer(ctx context.Context, container types.Container) *
 	}
 	result.IP = ip
 
-	// Выполняем пинг
 	pingCtx, cancel := context.WithTimeout(ctx, p.config.PingTimeout)
 	defer cancel()
 
@@ -161,7 +157,7 @@ func (p *Pinger) sendResult(ctx context.Context, result *PingResult) error {
 		}
 
 		lastErr = err
-		p.logger.Printf("Attempt %d failed: %v", attempt, err)
+		log.Printf("Attempt %d failed: %v", attempt, err)
 		if attempt < p.config.RetryAttempts {
 			select {
 			case <-ctx.Done():
@@ -187,7 +183,7 @@ func (p *Pinger) pingCycle(ctx context.Context) error {
 			defer wg.Done()
 			result := p.pingContainer(ctx, container)
 			if err := p.sendResult(ctx, result); err != nil {
-				p.logger.Printf("Failed to send result for container %s: %v", container.ID, err)
+				log.Printf("Failed to send result for container %s: %v", container.ID, err)
 			}
 		}(container)
 	}
@@ -197,8 +193,8 @@ func (p *Pinger) pingCycle(ctx context.Context) error {
 
 // Run запускает основной цикл пингера
 func (p *Pinger) Run(ctx context.Context) error {
-	p.logger.Println("Starting pinger service...")
-	defer p.logger.Println("Pinger service stopped")
+	log.Info("Starting pinger service...")
+	defer log.Info("Pinger service stopped")
 
 	ticker := time.NewTicker(p.config.PingInterval)
 	defer ticker.Stop()
@@ -209,13 +205,16 @@ func (p *Pinger) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := p.pingCycle(ctx); err != nil {
-				p.logger.Printf("Ping cycle error: %v", err)
+				log.Printf("Ping cycle error: %v", err)
 			}
 		}
 	}
 }
 
 func main() {
+	log.SetFormatter(&logrus.JSONFormatter{})
+	log.SetLevel(logrus.InfoLevel)
+
 	config := Config{
 		BackendURL:     "http://backend:8080/api/ping-results",
 		PingInterval:   5 * time.Second,
@@ -232,7 +231,6 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Обработка сигналов завершения
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -241,6 +239,7 @@ func main() {
 		cancel()
 	}()
 
+	log.Info("Starting pinger service...")
 	if err := pinger.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatalf("Pinger error: %v", err)
 	}
